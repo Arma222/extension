@@ -1,0 +1,16 @@
+[
+  {
+    "name": "Nyaa",
+    "id": "hayase.extension.nyaa.direct",
+    "version": "1.0.0",
+    "type": "torrent",
+    "accuracy": "high",
+    "ratio": 0,
+    "media": "sub",
+    "languages": ["all"],
+    "description": "Fetches torrents directly from Nyaa.si RSS feed",
+    "icon": "https://nyaa.si/static/favicon.png",
+    "update": "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/index.json",
+    "code": "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/nyaa.js"
+  }
+]
