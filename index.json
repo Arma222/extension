@@ -10,7 +10,7 @@
     "languages": ["all"],
     "description": "Fetches torrents directly from Nyaa.si RSS feed",
     "icon": "https://nyaa.si/static/favicon.png",
-    "update": "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/index.json",
-    "code": "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/nyaa.js"
+    "update": "https://raw.githubusercontent.com/Arma222/extension/main/index.json",
+    "code": "https://raw.githubusercontent.com/Arma222/extension/main/nyaa.js"
   }
 ]
