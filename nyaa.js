@@ -1,16 +1,13 @@
 export default new class Nyaa {
-  base = 'https://nyaa.si'
   ns = 'https://nyaa.si/xmlns/nyaa'
 
-  // Build search query from title + optional episode number
   buildQuery (title, episode) {
     const clean = title.replace(/[^\w\s\-]/g, ' ').trim()
     if (episode != null) return `${clean} ${String(episode).padStart(2, '0')}`
     return clean
   }
 
-  // Fetch nyaa RSS and parse results
-  async fetchRSS (query, category = '1_2') {
+  async fetchRSS (query, category = '0_0') {
     const nyaaUrl = `https://nyaa.si/?page=rss&q=${encodeURIComponent(query)}&c=${category}&f=0`
     const url = `https://corsproxy.io/?url=${encodeURIComponent(nyaaUrl)}`
     const res = await fetch(url)
@@ -26,18 +23,21 @@ export default new class Nyaa {
     return items.map(item => {
       const get = tag => item.querySelector(tag)?.textContent?.trim() ?? ''
 
-      // getElementsByTagNameNS is the correct way to handle nyaa: prefixed tags
-      const getNS = tag => (
-        item.getElementsByTagNameNS(this.ns, tag)[0] ??
-        item.getElementsByTagName(`nyaa:${tag}`)[0]  // fallback for some parsers
-      )?.textContent?.trim() ?? ''
+      // Robust namespace fallback — works even if the proxy strips namespace info
+      const getNS = tag => {
+        const direct = item.getElementsByTagNameNS(this.ns, tag)[0]
+        if (direct) return direct.textContent.trim()
+        for (const el of item.getElementsByTagName('*')) {
+          if (el.localName === tag) return el.textContent.trim()
+        }
+        return ''
+      }
 
       const hash = getNS('infoHash')
       const title = get('title')
 
       if (!hash) return null
 
-      // Build magnet with common public trackers
       const magnet = [
         `magnet:?xt=urn:btih:${hash}`,
         `dn=${encodeURIComponent(title)}`,
@@ -79,7 +79,6 @@ export default new class Nyaa {
   /** @type {import('./').SearchFunction} */
   async batch ({ titles }) {
     if (!titles?.length) return []
-    // Don't include episode number for batch — grab everything and mark as batch type
     const results = await this.fetchRSS(this.buildQuery(titles[0], null))
     return results.map(r => ({ ...r, type: 'batch' }))
   }
@@ -92,7 +91,8 @@ export default new class Nyaa {
 
   async test () {
     try {
-      const res = await fetch(`${this.base}/?page=rss&q=test&c=1_2`)
+      const nyaaUrl = 'https://nyaa.si/?page=rss&q=test&c=0_0'
+      const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(nyaaUrl)}`)
       return res.ok
     } catch {
       return false
