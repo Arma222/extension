@@ -11,7 +11,8 @@ export default new class Nyaa {
 
   // Fetch nyaa RSS and parse results
   async fetchRSS (query, category = '1_2') {
-    const url = `${this.base}/?page=rss&q=${encodeURIComponent(query)}&c=${category}&f=0`
+    const nyaaUrl = `https://nyaa.si/?page=rss&q=${encodeURIComponent(query)}&c=${category}&f=0`
+    const url = `https://corsproxy.io/?url=${encodeURIComponent(nyaaUrl)}`
     const res = await fetch(url)
     if (!res.ok) return []
     const text = await res.text()
