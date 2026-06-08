@@ -11,7 +11,7 @@
       "all"
     ],
     "icon": "https://sukebei.nyaa.si/static/favicon.png",
-    "update": "https://raw.githubusercontent.com/LetMeGetAByte/Hayase-Extensions/main/index.json",
-    "code": "https://raw.githubusercontent.com/LetMeGetAByte/Hayase-Extensions/main/sukebei.js"
+    "update": "https://raw.githubusercontent.com/Arma222/extension/main/index.json",
+    "code": "https://raw.githubusercontent.com/Arma222/extension/main/nyaa.js"
   }
 ]
