@@ -1,48 +1,128 @@
 export default new class Sukebei {
+  api = 'https://nyaasi-api.vercel.app/api/search'
   base = 'https://sukebei.nyaa.si/'
 
-  trackers = [
-    'http://sukebei.tracker.wf:8888/announce',
-    'udp://open.stealth.si:80/announce',
-    'udp://tracker.opentrackr.org:1337/announce',
-    'udp://exodus.desync.com:6969/announce',
-    'udp://tracker.torrent.eu.org:451/announce'
-  ]
-
-  /** @type {import('./').SearchFunction} */
-  async single({ titles, episode }) {
+  async single(query) {
+    const { titles, episode, absoluteEpisodeNumber, exclusions = [], resolution } = query
     if (!titles?.length) return []
 
-    const query = this.buildQuery(titles[0], episode)
+    return this.search({
+      titles,
+      episode,
+      absoluteEpisode: absoluteEpisodeNumber,
+      exclusions,
+      resolution,
+      batch: false,
+      fetcher: this.fetcher(query)
+    })
+  }
+
+  async batch(query) {
+    const { titles, exclusions = [] } = query
+    if (!titles?.length) return []
+
+    return this.search({
+      titles,
+      exclusions,
+      batch: true,
+      fetcher: this.fetcher(query)
+    })
+  }
+
+  async movie(query) {
+    const { titles, exclusions = [], resolution } = query
+    if (!titles?.length) return []
+
+    return this.search({
+      titles,
+      exclusions,
+      resolution,
+      batch: false,
+      fetcher: this.fetcher(query)
+    })
+  }
+
+  async search({ titles, episode, absoluteEpisode, exclusions = [], resolution, batch, fetcher }) {
+    const title = this.pickTitle(titles)
+    const query = this.buildQuery(title, episode, resolution, batch)
+    const params = new URLSearchParams({
+      q: query,
+      title,
+      site: 'sukebei',
+      category: '0_0',
+      batch: String(batch)
+    })
+
+    if (episode != null) params.set('episode', String(episode))
+    if (absoluteEpisode != null) params.set('absoluteEpisode', String(absoluteEpisode))
+    if (resolution) params.set('resolution', resolution)
+    if (exclusions.length) params.set('exclusions', exclusions.join(','))
+
+    const extraTitles = titles.filter(item => item !== title).slice(0, 2)
+    if (extraTitles.length) params.set('titles', extraTitles.join('|||'))
+
+    try {
+      const res = await fetcher(`${this.api}?${params}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (Array.isArray(data)) return data.map(item => this.mapApiItem(item))
+      }
+    } catch {}
+
+    return this.searchRss({ query, fetcher })
+  }
+
+  async searchRss({ query, fetcher }) {
     const url =
       `${this.base}?page=rss&f=0&c=0_0&q=${encodeURIComponent(query)}&s=seeders&o=desc`
 
-    const res = await fetch(url)
-    const xml = await res.text()
+    const res = await fetcher(url)
+    if (!res.ok) return []
 
-    return this.parse(xml)
+    return this.parseRss(await res.text())
   }
 
-  /** @type {import('./').SearchFunction} */
-  batch = this.single
-  movie = this.single
+  pickTitle(titles) {
+    const latin = titles.filter(title => /[a-zA-Z]/.test(title))
+    const pool = latin.length ? latin : titles
+    return pool.reduce((shortest, title) => title.length < shortest.length ? title : shortest)
+  }
 
-  buildQuery(title, episode) {
+  buildQuery(title, episode, resolution, batch) {
     let query = title.replace(/[^\w\s-]/g, ' ').trim()
-    if (episode) query += ` ${episode.toString().padStart(2, '0')}`
+    if (!batch && episode != null) query += ` ${String(episode).padStart(2, '0')}`
+    if (batch) query += ' Batch'
+    if (resolution) query += ` ${resolution}p`
     return query
   }
 
-  parse(xml) {
+  mapApiItem(item) {
+    return {
+      title: item.title || 'Unknown',
+      link: item.magnet || item.link || '',
+      hash: item.hash || '',
+      seeders: Number(item.seeders) || 0,
+      leechers: Number(item.leechers) || 0,
+      downloads: Number(item.downloads) || 0,
+      size: Number(item.size) || 0,
+      date: item.date ? new Date(item.date) : new Date(0),
+      verified: Boolean(item.trusted),
+      type: 'alt',
+      accuracy: item.accuracy || 'low'
+    }
+  }
+
+  parseRss(xml) {
     const items = xml.match(/<item>[\s\S]*?<\/item>/g) || []
 
     return items.map(item => {
       const title = this.decode(this.tag(item, 'title'))
       const hash = this.tag(item, 'nyaa:infoHash')
+      const link = this.decode(this.tag(item, 'link'))
 
       return {
         title,
-        link: this.magnet(hash, title),
+        link: link.startsWith('magnet:') ? link : this.magnet(hash, title),
         hash,
         seeders: this.number(this.tag(item, 'nyaa:seeders')),
         leechers: this.number(this.tag(item, 'nyaa:leechers')),
@@ -51,25 +131,19 @@ export default new class Sukebei {
         date: new Date(this.tag(item, 'pubDate')),
         verified: this.tag(item, 'nyaa:trusted') === 'Yes',
         type: 'alt',
-        accuracy: 'medium'
+        accuracy: 'low'
       }
     }).filter(item => item.title && item.hash)
   }
 
   tag(xml, name) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const match = xml.match(new RegExp(`<${escaped}[^>]*>([\\s\\S]*?)<\\/${escaped}>`))
+    const match = xml.match(new RegExp(`<${escaped}[^>]*>([\\s\\S]*?)<\\/${escaped}>`, 'i'))
     return match?.[1]?.trim() || ''
   }
 
   magnet(hash, title) {
-    const params = [
-      `xt=urn:btih:${hash}`,
-      `dn=${encodeURIComponent(title)}`,
-      ...this.trackers.map(tracker => `tr=${encodeURIComponent(tracker)}`)
-    ]
-
-    return `magnet:?${params.join('&')}`
+    return `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`
   }
 
   number(value) {
@@ -109,9 +183,14 @@ export default new class Sukebei {
     }
   }
 
-  async test() {
+  fetcher(query) {
+    return query.fetch || globalThis.fetch.bind(globalThis)
+  }
+
+  async test(_, fetch) {
     try {
-      const res = await fetch(`${this.base}?page=rss&q=one%20piece`)
+      const fetcher = fetch || globalThis.fetch.bind(globalThis)
+      const res = await fetcher(`${this.api}?q=test&site=sukebei&category=0_0&batch=false`)
       return res.ok
     } catch {
       return false
