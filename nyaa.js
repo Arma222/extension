@@ -65,21 +65,35 @@ export default new class Sukebei {
       const res = await fetcher(`${this.api}?${params}`)
       if (res.ok) {
         const data = await res.json()
-        if (Array.isArray(data)) return data.map(item => this.mapApiItem(item))
+        if (Array.isArray(data)) {
+          return this.filterResults(data.map(item => this.mapApiItem(item)), {
+            titles,
+            episode,
+            exclusions,
+            resolution,
+            batch
+          })
+        }
       }
     } catch {}
 
-    return this.searchRss({ query, fetcher })
+    return this.searchRss({ query, titles, episode, exclusions, resolution, batch, fetcher })
   }
 
-  async searchRss({ query, fetcher }) {
+  async searchRss({ query, titles, episode, exclusions, resolution, batch, fetcher }) {
     const url =
       `${this.base}?page=rss&f=0&c=0_0&q=${encodeURIComponent(query)}&s=seeders&o=desc`
 
     const res = await fetcher(url)
     if (!res.ok) return []
 
-    return this.parseRss(await res.text())
+    return this.filterResults(this.parseRss(await res.text()), {
+      titles,
+      episode,
+      exclusions,
+      resolution,
+      batch
+    })
   }
 
   pickTitle(titles) {
@@ -110,6 +124,100 @@ export default new class Sukebei {
       type: 'alt',
       accuracy: item.accuracy || 'low'
     }
+  }
+
+  filterResults(results, context) {
+    const filtered = results
+      .filter(item => this.allowedByExclusions(item, context.exclusions))
+      .map(item => {
+        const score = this.scoreResult(item, context)
+        return {
+          ...item,
+          accuracy: score >= 120 ? 'high' : score >= 80 ? 'medium' : 'low',
+          score
+        }
+      })
+      .filter(item => item.score >= this.minScore(context))
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score
+        if (b.seeders !== a.seeders) return b.seeders - a.seeders
+        return b.downloads - a.downloads
+      })
+
+    return filtered
+      .slice(0, context.batch ? 8 : 5)
+      .map(({ score, ...item }) => item)
+  }
+
+  scoreResult(item, { titles, episode, resolution, batch }) {
+    const titleScore = Math.max(...titles.map(title => this.scoreTitle(item.title, title)))
+    let score = titleScore
+
+    if (!batch && episode != null) {
+      score += this.matchesEpisode(item.title, episode) ? 55 : -80
+      if (this.looksLikeBatch(item.title)) score -= 35
+    }
+
+    if (batch && this.looksLikeBatch(item.title)) score += 30
+
+    if (resolution) {
+      score += this.normalize(item.title).includes(`${resolution}p`) ? 10 : -10
+    }
+
+    score += Math.min(Number(item.seeders) || 0, 20)
+    if (item.verified) score += 10
+
+    return score
+  }
+
+  scoreTitle(resultTitle, searchTitle) {
+    const result = this.normalize(resultTitle)
+    const search = this.normalize(searchTitle)
+    if (!result || !search) return 0
+
+    const tokens = this.titleTokens(search)
+    if (!tokens.length) return 0
+
+    let score = 0
+    if (result.includes(search)) score += 70
+
+    const matched = tokens.filter(token => result.includes(token)).length
+    score += Math.round((matched / tokens.length) * 55)
+
+    return score
+  }
+
+  titleTokens(title) {
+    return title
+      .split(' ')
+      .filter(token => token.length > 2)
+      .filter(token => !['the', 'and', 'season', 'part'].includes(token))
+  }
+
+  minScore({ episode, batch }) {
+    if (!batch && episode != null) return 95
+    return 65
+  }
+
+  allowedByExclusions(item, exclusions = []) {
+    const title = this.normalize(item.title)
+    return !exclusions.some(exclusion => title.includes(this.normalize(exclusion)))
+  }
+
+  matchesEpisode(title, episode) {
+    const value = String(episode)
+    const padded = value.padStart(2, '0')
+    const escaped = [value, padded]
+      .filter((item, index, arr) => arr.indexOf(item) === index)
+      .map(item => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|')
+
+    return new RegExp(`(^|[^0-9a-z])(?:e|ep|episode|#)?\\s*(?:${escaped})(v\\d+)?([^0-9a-z]|$)`, 'i')
+      .test(title)
+  }
+
+  looksLikeBatch(title) {
+    return /\b(batch|complete|collection|season|s\d{1,2}|(?:\d{1,3})\s*[-~]\s*(?:\d{1,3}))\b/i.test(title)
   }
 
   parseRss(xml) {
@@ -148,6 +256,15 @@ export default new class Sukebei {
 
   number(value) {
     return parseInt(value || '0', 10)
+  }
+
+  normalize(value) {
+    return this.decode(String(value || ''))
+      .toLowerCase()
+      .replace(/['’]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ')
   }
 
   decode(value) {
