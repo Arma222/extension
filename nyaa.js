@@ -1,98 +1,66 @@
-export default new class Nyaa {
-  ns = 'https://nyaa.si/xmlns/nyaa'
+export default new class Sukebei {
+  base = 'https://sukebei.nyaa.si/'
 
-  buildQuery (title, episode) {
-    const clean = title.replace(/[^\w\s\-]/g, ' ').trim()
-    if (episode != null) return `${clean} ${String(episode).padStart(2, '0')}`
-    return clean
-  }
+  /** @type {import('./').SearchFunction} */
+  async single({ titles, episode }) {
+    if (!titles?.length) return []
 
-  async fetchRSS (query, category = '0_0') {
-    const nyaaUrl = `https://nyaa.si/?page=rss&q=${encodeURIComponent(query)}&c=${category}&f=0`
-    const url = `https://corsproxy.io/?url=${encodeURIComponent(nyaaUrl)}`
+    const query = this.buildQuery(titles[0], episode)
+
+    const url =
+      `${this.base}?f=0&c=0_0&q=${encodeURIComponent(query)}&s=seeders&o=desc`
+
     const res = await fetch(url)
-    if (!res.ok) return []
-    const text = await res.text()
-    return this.parseRSS(text)
+    const html = await res.text()
+
+    return this.parse(html)
   }
 
-  parseRSS (xml) {
-    const doc = new DOMParser().parseFromString(xml, 'text/xml')
-    const items = [...doc.querySelectorAll('item')]
+  batch = this.single
+  movie = this.single
 
-    return items.map(item => {
-      const get = tag => item.querySelector(tag)?.textContent?.trim() ?? ''
+  buildQuery(title, episode) {
+    let query = title.replace(/[^\w\s-]/g, ' ').trim()
+    if (episode) query += ` ${episode.toString().padStart(2, '0')}`
+    return query
+  }
 
-      // Robust namespace fallback — works even if the proxy strips namespace info
-      const getNS = tag => {
-        const direct = item.getElementsByTagNameNS(this.ns, tag)[0]
-        if (direct) return direct.textContent.trim()
-        for (const el of item.getElementsByTagName('*')) {
-          if (el.localName === tag) return el.textContent.trim()
-        }
-        return ''
-      }
+  parse(html) {
+    const results = []
 
-      const hash = getNS('infoHash')
-      const title = get('title')
+    const rows = html.match(/<tr class="(?:default|success|danger)">[\s\S]*?<\/tr>/g) || []
 
-      if (!hash) return null
+    for (const row of rows) {
+      const titleMatch = row.match(/title="([^"]+)"/)
+      const magnetMatch = row.match(/href="(magnet:\?xt=urn:btih:[^"]+)"/)
+      const seedersMatch = row.match(/<td class="text-center">(\d+)<\/td>\s*<td class="text-center">(\d+)<\/td>/)
 
-      const magnet = [
-        `magnet:?xt=urn:btih:${hash}`,
-        `dn=${encodeURIComponent(title)}`,
-        'tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce',
-        'tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce',
-        'tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce',
-      ].join('&')
+      if (!titleMatch || !magnetMatch) continue
 
-      return {
-        title,
-        link: magnet,
+      const hash =
+        magnetMatch[1].match(/btih:([A-Fa-f0-9]+)/)?.[1] || ''
+
+      results.push({
+        title: titleMatch[1],
+        link: magnetMatch[1],
         hash,
-        seeders: parseInt(getNS('seeders')) || 0,
-        leechers: parseInt(getNS('leechers')) || 0,
-        downloads: parseInt(getNS('downloads')) || 0,
-        size: this.parseSize(getNS('size')),
-        date: new Date(get('pubDate')),
-        verified: getNS('trusted') === 'Yes',
+        seeders: seedersMatch ? Number(seedersMatch[1]) : 0,
+        leechers: seedersMatch ? Number(seedersMatch[2]) : 0,
+        downloads: 0,
+        size: 0,
+        date: new Date(),
+        verified: false,
         type: 'alt',
-        accuracy: 'high'
-      }
-    }).filter(Boolean)
+        accuracy: 'medium'
+      })
+    }
+
+    return results
   }
 
-  parseSize (str) {
-    const m = str?.match(/([\d.]+)\s*(KiB|MiB|GiB|TiB)/i)
-    if (!m) return 0
-    const val = parseFloat(m[1])
-    const units = { kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4 }
-    return Math.round(val * (units[m[2].toLowerCase()] ?? 0))
-  }
-
-  /** @type {import('./').SearchFunction} */
-  async single ({ titles, episode }) {
-    if (!titles?.length) return []
-    return this.fetchRSS(this.buildQuery(titles[0], episode))
-  }
-
-  /** @type {import('./').SearchFunction} */
-  async batch ({ titles }) {
-    if (!titles?.length) return []
-    const results = await this.fetchRSS(this.buildQuery(titles[0], null))
-    return results.map(r => ({ ...r, type: 'batch' }))
-  }
-
-  /** @type {import('./').SearchFunction} */
-  async movie ({ titles }) {
-    if (!titles?.length) return []
-    return this.fetchRSS(this.buildQuery(titles[0], null))
-  }
-
-  async test () {
+  async test() {
     try {
-      const nyaaUrl = 'https://nyaa.si/?page=rss&q=test&c=0_0'
-      const res = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(nyaaUrl)}`)
+      const res = await fetch(this.base)
       return res.ok
     } catch {
       return false
