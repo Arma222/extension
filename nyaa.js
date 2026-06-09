@@ -133,7 +133,7 @@ export default new class Sukebei {
         const score = this.scoreResult(item, context)
         return {
           ...item,
-          accuracy: score >= 120 ? 'high' : score >= 80 ? 'medium' : 'low',
+          accuracy: score >= 140 ? 'high' : score >= 100 ? 'medium' : 'low',
           score
         }
       })
@@ -150,21 +150,45 @@ export default new class Sukebei {
   }
 
   scoreResult(item, { titles, episode, resolution, batch }) {
-    const titleScore = Math.max(...titles.map(title => this.scoreTitle(item.title, title)))
-    let score = titleScore
+    const bestMatch = titles.reduce((best, title) => {
+      const result = this.scoreTitle(item.title, title)
+      return result.score > best.score ? result : best
+    }, { score: 0, ratio: 0 })
+
+    let score = bestMatch.score
+
+    // hard reject: if less than 60% of search tokens matched, this is likely wrong anime
+    if (bestMatch.ratio < 0.6) return -100
 
     if (!batch && episode != null) {
-      score += this.matchesEpisode(item.title, episode) ? 55 : -80
-      if (this.looksLikeBatch(item.title)) score -= 35
+      const epMatch = this.matchesEpisode(item.title, episode)
+      score += epMatch ? 60 : -100
+      if (this.looksLikeBatch(item.title)) score -= 50
+      // penalize if the result has a DIFFERENT episode number prominently
+      if (!epMatch && this.hasAnyEpisodeNumber(item.title)) score -= 30
     }
 
-    if (batch && this.looksLikeBatch(item.title)) score += 30
+    if (batch) {
+      if (this.looksLikeBatch(item.title)) score += 35
+      // single episode results should be penalized in batch mode
+      if (this.hasSingleEpisodeOnly(item.title)) score -= 40
+    }
 
     if (resolution) {
-      score += this.normalize(item.title).includes(`${resolution}p`) ? 10 : -10
+      const norm = this.normalize(item.title)
+      if (norm.includes(`${resolution}p`)) score += 15
+      else if (norm.match(/\b(480|720|1080|2160)p\b/)) score -= 15 // has different resolution
+      else score -= 5
     }
 
-    score += Math.min(Number(item.seeders) || 0, 20)
+    // penalize extremely large result titles that probably contain extra series info
+    const normResult = this.normalize(item.title)
+    const bestSearch = this.normalize(titles[0])
+    const resultWords = normResult.split(' ').filter(w => w.length > 1).length
+    const searchWords = bestSearch.split(' ').filter(w => w.length > 1).length
+    if (resultWords > searchWords * 4) score -= 20
+
+    score += Math.min(Number(item.seeders) || 0, 15)
     if (item.verified) score += 10
 
     return score
@@ -173,51 +197,170 @@ export default new class Sukebei {
   scoreTitle(resultTitle, searchTitle) {
     const result = this.normalize(resultTitle)
     const search = this.normalize(searchTitle)
-    if (!result || !search) return 0
+    if (!result || !search) return { score: 0, ratio: 0 }
 
     const tokens = this.titleTokens(search)
-    if (!tokens.length) return 0
+    if (!tokens.length) return { score: 0, ratio: 0 }
 
     let score = 0
-    if (result.includes(search)) score += 70
 
-    const matched = tokens.filter(token => result.includes(token)).length
-    score += Math.round((matched / tokens.length) * 55)
+    // exact substring match is very strong signal
+    if (result.includes(search)) score += 80
 
-    return score
+    // word-boundary-aware token matching to avoid partial matches
+    // e.g. "one" should not match "stone" or "alone"
+    const matched = tokens.filter(token => this.tokenInTitle(token, result)).length
+    const ratio = matched / tokens.length
+    score += Math.round(ratio * 60)
+
+    // bonus for consecutive token runs (indicates phrase match, not scattered words)
+    const consecutiveBonus = this.consecutiveTokenBonus(tokens, result)
+    score += consecutiveBonus
+
+    // penalty for very short search titles (high false-positive risk)
+    if (search.length <= 4) score -= 20
+
+    return { score, ratio }
+  }
+
+  /**
+   * Check if a token appears in the title respecting word boundaries.
+   * For short tokens (<=3 chars), require word boundary match to avoid false positives.
+   * For longer tokens, simple includes is fine since they're unlikely to be substrings.
+   */
+  tokenInTitle(token, normalizedTitle) {
+    if (token.length <= 3) {
+      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      return new RegExp(`(^|\\s)${escaped}(\\s|$)`).test(normalizedTitle)
+    }
+    return normalizedTitle.includes(token)
+  }
+
+  /**
+   * Bonus points for consecutive search tokens appearing in order in the result.
+   * This helps distinguish "My Hero Academia" from "My Academia Hero Something".
+   */
+  consecutiveTokenBonus(tokens, normalizedTitle) {
+    if (tokens.length < 2) return 0
+
+    let maxRun = 0
+    let currentRun = 0
+
+    for (let i = 0; i < tokens.length; i++) {
+      if (this.tokenInTitle(tokens[i], normalizedTitle)) {
+        currentRun++
+        if (i > 0 && currentRun > 1) {
+          // verify they appear in order
+          const prevIdx = normalizedTitle.indexOf(tokens[i - 1])
+          const currIdx = normalizedTitle.indexOf(tokens[i], prevIdx)
+          if (currIdx > prevIdx) {
+            maxRun = Math.max(maxRun, currentRun)
+          } else {
+            currentRun = 1
+          }
+        } else {
+          maxRun = Math.max(maxRun, currentRun)
+        }
+      } else {
+        currentRun = 0
+      }
+    }
+
+    // only give bonus for runs of 2+ consecutive tokens
+    return maxRun >= 2 ? Math.min(maxRun * 8, 25) : 0
   }
 
   titleTokens(title) {
     return title
       .split(' ')
-      .filter(token => token.length > 2)
-      .filter(token => !['the', 'and', 'season', 'part'].includes(token))
+      .filter(token => token.length > 1)
+      .filter(token => !['the', 'and', 'or', 'of', 'in', 'to', 'a', 'an', 'no',
+        'wa', 'ga', 'wo', 'ni', 'de', 'season', 'part', 'vol'].includes(token))
   }
 
   minScore({ episode, batch }) {
-    if (!batch && episode != null) return 95
-    return 65
+    if (!batch && episode != null) return 110
+    if (batch) return 90
+    return 80
   }
 
   allowedByExclusions(item, exclusions = []) {
     const title = this.normalize(item.title)
-    return !exclusions.some(exclusion => title.includes(this.normalize(exclusion)))
+    return !exclusions.some(exclusion => {
+      const norm = this.normalize(exclusion)
+      if (!norm) return false
+      // use word boundary matching for short exclusions too
+      if (norm.length <= 3) {
+        const escaped = norm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        return new RegExp(`(^|\\s)${escaped}(\\s|$)`).test(title)
+      }
+      return title.includes(norm)
+    })
   }
 
   matchesEpisode(title, episode) {
+    const norm = this.normalize(title)
     const value = String(episode)
     const padded = value.padStart(2, '0')
-    const escaped = [value, padded]
-      .filter((item, index, arr) => arr.indexOf(item) === index)
-      .map(item => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    const variants = [...new Set([value, padded])]
+    const escaped = variants
+      .map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
       .join('|')
 
-    return new RegExp(`(^|[^0-9a-z])(?:e|ep|episode|#)?\\s*(?:${escaped})(v\\d+)?([^0-9a-z]|$)`, 'i')
-      .test(title)
+    // match episode patterns but NOT inside resolution (e.g. 1080p), version (v2),
+    // or year patterns (2024), or size numbers
+    // look for: E01, EP01, Episode 01, #01, - 01, or standalone 01
+    // but not: 1080p, x264, 10bit, 2024, S01
+    const epPattern = new RegExp(
+      `(?:^|[^0-9a-z])(?:e|ep|episode|#|\\s-\\s)\\s*(?:${escaped})(?:v\\d+)?(?:[^0-9a-z]|$)`, 'i'
+    )
+
+    if (epPattern.test(norm)) return true
+
+    // fallback: standalone number match, but with stricter boundaries
+    // the number must not be adjacent to other digits, not part of resolution/codec
+    const standalonePattern = new RegExp(
+      `(?:^|[^0-9a-z])(?:${escaped})(?:v\\d+)?(?:[^0-9a-z]|$)`, 'i'
+    )
+
+    if (standalonePattern.test(norm)) {
+      // make sure it's not matching a resolution, codec, year, or size
+      const falsePositives = /(?:480|720|1080|2160)p|x26[45]|h\.?26[45]|10bit|8bit|(?:19|20)\d{2}/i
+      // check the specific match isn't part of a known false pattern
+      const numStr = padded
+      const idx = norm.indexOf(numStr)
+      if (idx >= 0) {
+        const surrounding = norm.substring(Math.max(0, idx - 5), idx + numStr.length + 5)
+        if (falsePositives.test(surrounding)) return false
+      }
+      return true
+    }
+
+    return false
+  }
+
+  /**
+   * Detect if the title contains ANY episode number pattern
+   * (used to detect wrong-episode results)
+   */
+  hasAnyEpisodeNumber(title) {
+    return /(?:^|[^a-z0-9])(?:e|ep|episode|#)\s*\d+/i.test(title) ||
+           /\s-\s\d{1,3}(?:\s|$|v\d)/i.test(title)
+  }
+
+  /**
+   * Detect titles that look like a single episode (not a batch)
+   */
+  hasSingleEpisodeOnly(title) {
+    const norm = this.normalize(title)
+    // has a single episode marker and no range
+    return /(?:e|ep|episode)\s*\d+/i.test(norm) &&
+           !/\d+\s*[-~]\s*\d+/.test(norm) &&
+           !this.looksLikeBatch(title)
   }
 
   looksLikeBatch(title) {
-    return /\b(batch|complete|collection|season|s\d{1,2}|(?:\d{1,3})\s*[-~]\s*(?:\d{1,3}))\b/i.test(title)
+    return /\b(batch|complete|collection|season|full|s\d{1,2}(?:$|[^a-z0-9])|(?:\d{1,3})\s*[-~]\s*(?:\d{1,3}))\b/i.test(title)
   }
 
   parseRss(xml) {
