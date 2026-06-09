@@ -133,7 +133,7 @@ export default new class Sukebei {
         const score = this.scoreResult(item, context)
         return {
           ...item,
-          accuracy: score >= 140 ? 'high' : score >= 100 ? 'medium' : 'low',
+          accuracy: score >= 120 ? 'high' : score >= 80 ? 'medium' : 'low',
           score
         }
       })
@@ -145,7 +145,7 @@ export default new class Sukebei {
       })
 
     return filtered
-      .slice(0, context.batch ? 8 : 5)
+      .slice(0, context.batch ? 12 : 8)
       .map(({ score, ...item }) => item)
   }
 
@@ -158,20 +158,20 @@ export default new class Sukebei {
     let score = bestMatch.score
 
     // hard reject: if less than 60% of search tokens matched, this is likely wrong anime
-    if (bestMatch.ratio < 0.6) return -100
+    if (bestMatch.ratio < 0.45) return -100
 
     if (!batch && episode != null) {
       const epMatch = this.matchesEpisode(item.title, episode)
-      score += epMatch ? 60 : -100
+      score += epMatch ? 60 : -60
       if (this.looksLikeBatch(item.title)) score -= 50
       // penalize if the result has a DIFFERENT episode number prominently
-      if (!epMatch && this.hasAnyEpisodeNumber(item.title)) score -= 30
+      if (!epMatch && this.hasAnyEpisodeNumber(item.title)) score -= 20
     }
 
     if (batch) {
       if (this.looksLikeBatch(item.title)) score += 35
       // single episode results should be penalized in batch mode
-      if (this.hasSingleEpisodeOnly(item.title)) score -= 40
+      if (this.hasSingleEpisodeOnly(item.title)) score -= 25
     }
 
     if (resolution) {
@@ -279,9 +279,9 @@ export default new class Sukebei {
   }
 
   minScore({ episode, batch }) {
-    if (!batch && episode != null) return 110
-    if (batch) return 90
-    return 80
+    if (!batch && episode != null) return 85
+    if (batch) return 70
+    return 65
   }
 
   allowedByExclusions(item, exclusions = []) {
