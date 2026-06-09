@@ -104,9 +104,8 @@ export default new class Sukebei {
 
   buildQuery(title, episode, resolution, batch) {
     let query = title.replace(/[^\w\s-]/g, ' ').trim()
-    if (!batch && episode != null) query += ` ${String(episode).padStart(2, '0')}`
-    if (batch) query += ' Batch'
-    if (resolution) query += ` ${resolution}p`
+    // don't append episode or resolution to the search query
+    // sukebei returns fewer results with those appended, and our filter handles ranking
     return query
   }
 
