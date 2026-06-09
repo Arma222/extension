@@ -3,7 +3,7 @@
     "manifestVersion": 2,
     "name": "Sukebei",
     "id": "hayase.extension.sukebei",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "type": "torrent",
     "accuracy": "medium",
     "updatePeers": true,
